@@ -1,0 +1,15 @@
+# 忽略編譯產生的檔案
+*.class
+*.exe
+*.apk
+
+# 忽略 Node.js 套件資料夾
+node_modules/
+
+# 忽略環境設定檔
+.env
+
+# 忽略臨時資料
+*.log
+temp/
+node_modules/

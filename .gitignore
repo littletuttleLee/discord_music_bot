@@ -13,3 +13,4 @@ node_modules/
 *.log
 temp/
 node_modules/
+index_old.js

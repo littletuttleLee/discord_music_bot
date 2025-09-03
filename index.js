@@ -28,15 +28,8 @@ const client = new Client({
   ]
 });
 
-// const { spawn } = require('child_process');
-// async function createStream(url) {
-//   return ytDlpWrap.execStream([
-//     url,
-//     '-f', 'bestaudio',
-//     '-o', '-',   // 輸出到 stdout
-//   ]);
-// }
-
+// 播放模式列表
+const PLAY_MODES = ['正常播放', '循環播放', '隨機播放', '單曲循環'];
 
 
 client.once('ready', () => {
@@ -44,7 +37,7 @@ client.once('ready', () => {
 });
 
 // 播放函式
-async function playSong(guild) {
+async function playSong(guild, index) {
   const serverQueue = songQueue.get(guild.id);
   
   if (!serverQueue) return;
@@ -59,7 +52,8 @@ async function playSong(guild) {
     serverQueue.player.removeAllListeners();
   }
 
-  const song = serverQueue.songs[serverQueue.currentIndex];
+
+  const song = serverQueue.songs[index];
   if (!song) {
     await clearControlPanel(serverQueue);
 
@@ -103,13 +97,9 @@ async function playSong(guild) {
     const resource = createAudioResource(streamUrl, { inlineVolume: true });
     resource.volume.setVolume(0.2); // 設為 50% 音量
     serverQueue.player.play(resource);
-    
-    // const process = await createStream(song.url);
-    // const resource = createAudioResource(process, { inlineVolume: true });
-    // resource.volume.setVolume(0.2);
-    // serverQueue.player.play(resource);
 
     serverQueue.currentSong = { title: metadata.title, url: song.url };
+    serverQueue.currentIndex = index;
 
     serverQueue.textChannel.send(`▶️ 開始播放： **${metadata.title}**`);
 
@@ -120,52 +110,61 @@ async function playSong(guild) {
 
     serverQueue.player.once(AudioPlayerStatus.Idle, () => {
       console.log(`[${guild.id}] 觸發 Idle，切換下一首`);
-      const finished = serverQueue.currentSong;
-      if (finished) {
-        serverQueue.textChannel.send(`⏹ 播放完畢： **${finished.title}**`);
-      }
-      serverQueue.currentIndex++;
-      playSong(guild);
+      handleSongEnd(guild);
+      // const finished = serverQueue.currentSong;
+      // if (finished) {
+      //   serverQueue.textChannel.send(`⏹ 播放完畢： **${finished.title}**`);
+      //   console.log("播放完畢：", finished.title,"\n");
+      // }
+      // serverQueue.currentIndex++;
+      // playSong(guild);
       // playSong(guild, serverQueue.songs[serverQueue.currentIndex]); // 播放下一首
     });
 
-    // serverQueue.player.once(AudioPlayerStatus.Idle, () => {
-    //   console.log(`[${guild.id}] 觸發 Idle，切換下一首`);
-    //   const finished = serverQueue.currentSong;
-    //   if (finished) {
-    //     serverQueue.textChannel.send(`⏹ 播放完畢： **${finished.title}**`);
-    //   }
-    //   serverQueue.songs.shift(); // 移除已播放的
-
-    //   // ✅ 這裡加判斷
-    //   if (serverQueue.songs.length === 0) {
-    //     console.log(`[${guild.id}] 清單空了，準備退出`);
-    //     if (serverQueue.controlMessage) {
-    //       try { serverQueue.controlMessage.delete(); } catch {}
-    //     }
-    //     if (serverQueue.connection.state.status !== VoiceConnectionStatus.Destroyed) {
-    //       serverQueue.connection.destroy();
-    //     }
-    //     songQueue.delete(guild.id);
-    //     serverQueue.textChannel.send('✅ 播放清單已結束，機器人退出語音頻道。');
-    //     return;
-    //   }
-
-    //   playSong(guild, serverQueue.songs[0]); // 播放下一首
-    // });
-
   } catch (error) {
     console.error(`[${guild.id}] 播放錯誤`, error);
-    serverQueue.songs.shift();
+    // serverQueue.songs.shift();
     playSong(guild);
     // playSong(guild, serverQueue.songs[0]);
   }
 }
 
+function handleSongEnd(guild) {
+  const serverQueue = songQueue.get(guild.id);
+  if (!serverQueue) return;
+
+  const mode = serverQueue.playMode || "正常播放";
+  let nextIndex;
+
+  switch (mode) {
+    case "正常播放":
+      nextIndex = serverQueue.currentIndex + 1;
+      if (nextIndex >= serverQueue.songs.length) {
+        playSong(guild, null); // 觸發結束清單
+        return;
+      }
+      break;
+
+    case "循環播放":
+      nextIndex = (serverQueue.currentIndex + 1) % serverQueue.songs.length;
+      break;
+
+    case "隨機播放":
+      nextIndex = Math.floor(Math.random() * serverQueue.songs.length);
+      break;
+
+    case "單曲循環":
+      nextIndex = serverQueue.currentIndex;
+      break;
+  }
+
+  playSong(guild, nextIndex);
+}
+
 //控制面板按鈕
-async function updateControlPanel(serverQueue) {
+async function updateControlPanel(serverQueue, type = "create") {
   // 如果舊的存在就刪除
-  if (serverQueue.controlMessage) {
+  if (serverQueue.controlMessage&&type == "create") {
     try { await serverQueue.controlMessage.delete(); } catch {}
   }
 
@@ -182,7 +181,11 @@ async function updateControlPanel(serverQueue) {
     new ButtonBuilder()
       .setCustomId('next_song')
       .setLabel('⏭ 下一首')
-      .setStyle(ButtonStyle.Secondary)
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('switch_playmode')
+      .setLabel(`🔁 ${serverQueue.playMode || '正常播放'}`)
+      .setStyle(ButtonStyle.Success)
   );
 
   // 刪除播放清單按鈕放在新的一列
@@ -197,15 +200,28 @@ async function updateControlPanel(serverQueue) {
   const embed = new EmbedBuilder()
     .setColor(0x1DB954) // Spotify 綠
     .setTitle('🎶 播放控制面板')
-    .setDescription(`**目前播放：**\n${serverQueue.currentSong?.title || '未知歌曲'}`)
+    .setDescription(`**目前播放：**\n${serverQueue.currentSong?.title || '未知歌曲'}\n**播放模式：** ${serverQueue.playMode || '正常播放'}`)
     .setTimestamp()
     .setFooter({ text: '使用按鈕控制播放' });
 
   // 發送控制面板
-  serverQueue.controlMessage = await serverQueue.textChannel.send({
-    embeds: [embed],
-    components: [row1, row2]
-  });
+  // serverQueue.controlMessage = await serverQueue.textChannel.send({
+  //   embeds: [embed],
+  //   components: [row1, row2]
+  // });
+  if (type === "edit" && serverQueue.controlMessage) {
+      // === 編輯現有面板 ===
+      await serverQueue.controlMessage.edit({
+        embeds: [embed],
+        components: [row1, row2]
+      });
+    } else {
+      // === 建立新面板 ===
+      serverQueue.controlMessage = await serverQueue.textChannel.send({
+        embeds: [embed],
+        components: [row1, row2]
+      });
+    }
 }
 
 //按鈕互動
@@ -231,9 +247,11 @@ client.on('interactionCreate', async interaction => {
 
     case 'prev_song':
       if (serverQueue.currentIndex > 0) {
+        // 先回應，避免交互失敗
+        await interaction.deferUpdate();
         serverQueue.currentIndex--;
-        playSong(interaction.guild, serverQueue.songs[serverQueue.currentIndex]);
-        await interaction.reply({ content: '⏮ 已播放上一首', ephemeral: true });
+        playSong(interaction.guild,serverQueue.currentIndex);
+        // await interaction.reply({ content: '⏮ 已播放上一首', ephemeral: true });
       } else {
         await interaction.reply({ content: '⚠️ 沒有上一首歌曲', ephemeral: true });
       }
@@ -241,12 +259,33 @@ client.on('interactionCreate', async interaction => {
 
     case 'next_song':
       if (serverQueue.currentIndex < serverQueue.songs.length - 1) {
+        // 先回應，避免交互失敗
+        await interaction.deferUpdate();
         serverQueue.currentIndex++;
-        playSong(interaction.guild, serverQueue.songs[serverQueue.currentIndex]);
-        await interaction.reply({ content: '⏭ 已播放下一首', ephemeral: true });
+        playSong(interaction.guild, serverQueue.currentIndex);
+        // await interaction.reply({ content: '⏭ 已播放下一首', ephemeral: true });
       } else {
         await interaction.reply({ content: '⚠️ 沒有下一首歌曲', ephemeral: true });
       }
+      break;
+      
+      
+    case 'switch_playmode':
+      // 先回應，避免交互失敗
+      await interaction.deferUpdate();
+        // 找出目前模式在列表中的位置
+      const currentIndex = PLAY_MODES.indexOf(serverQueue.playMode || '正常播放');
+      // 切換到下一個模式
+      const nextIndex = (currentIndex + 1) % PLAY_MODES.length;
+      serverQueue.playMode = PLAY_MODES[nextIndex];
+
+      // 更新控制面板
+      await updateControlPanel(serverQueue,"edit");
+
+      // await interaction.reply({
+      //   content: `🔁 已切換播放模式：**${serverQueue.playMode}**`,
+      //   ephemeral: true
+      // });
       break;
 
     case 'delete_playlist':
@@ -341,7 +380,8 @@ client.on('messageCreate', async message => {
         currentSong: null,
         controlMessage: null,
         lastPanelTs: 0,
-        updatingPanel: false
+        updatingPanel: false,
+        playMode: '正常播放'
       };
       songQueue.set(message.guild.id, queueConstruct);
       queueConstruct.songs.push(song);
@@ -356,9 +396,9 @@ client.on('messageCreate', async message => {
         connection.subscribe(queueConstruct.player);
 
         console.log(`[${message.guild.id}] 已成功連接語音頻道`);
-        playSong(message.guild);
+        playSong(message.guild, 0);
         // playSong(message.guild, queueConstruct.songs[0]);
-        message.reply(`🎵 已加入播放清單並開始播放！`);
+        message.reply(`🎵 已加入播放清單並準備開始播放！`);
 
       } catch (error) {
         console.error(`[${message.guild.id}] 連接語音錯誤`, error);
@@ -426,42 +466,10 @@ client.on('messageCreate', async (message) => {
   //   return;
   // }
 
-
-
   try {
-    // 刪掉舊的
-  //   if (serverQueue.controlMessage) {
-  //     await serverQueue.controlMessage.delete().catch(() => {});
-  //   }
-
-  //   // 發送新的控制面板
-  //   const row = new ActionRowBuilder().addComponents(
-  //   new ButtonBuilder()
-  //     .setCustomId('prev_song')
-  //     .setLabel('⏮ 上一首')
-  //     .setStyle(ButtonStyle.Secondary),
-  //   new ButtonBuilder()
-  //     .setCustomId('toggle_pause')
-  //     .setLabel('⏯ 暫停/繼續')
-  //     .setStyle(ButtonStyle.Primary),
-  //   new ButtonBuilder()
-  //     .setCustomId('next_song')
-  //     .setLabel('⏭ 下一首')
-  //     .setStyle(ButtonStyle.Secondary),
-  //   new ButtonBuilder()
-  //     .setCustomId('delete_playlist')
-  //     .setLabel('❌ 刪除清單')
-  //     .setStyle(ButtonStyle.Danger)
-  // );
-
-  //   const newMsg = await message.channel.send({
-  //     content: `🎶 正在播放：**${serverQueue.currentSong?.title || '未知'}**`,
-  //     components: [row]
-  //   });
-
     await updateControlPanel(serverQueue);
 
-    serverQueue.controlMessage = newMsg;
+    // serverQueue.controlMessage = newMsg;
   } catch (err) {
     console.error('更新控制面板失敗：', err);
   } finally {
